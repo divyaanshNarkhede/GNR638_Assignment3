@@ -1,0 +1,27 @@
+# old implementation folder
+GNR-638-Assignment-3/
+
+# python
+__pycache__/
+*.pyc
+*.pyo
+venv/
+.venv/
+*.egg-info/
+
+# data and model weights
+data/
+saved_models/
+checkpoints/
+*.pth
+
+# plots (can regenerate)
+*.png
+
+# OS junk
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/
