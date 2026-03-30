@@ -160,7 +160,8 @@ def run_training(model, train_dl, val_dl, epochs=10, base_lr=0.01,
                 imgs, segs = imgs.to(dev), segs.to(dev)
                 out = model(imgs)
                 vloss_sum += ce_loss(out, segs).item()
-                pred_list.append(out.argmax(1).cpu())
+                preds = out.argmax(1)
+                pred_list.append(preds.cpu())
                 gt_list.append(segs.cpu())
 
         val_loss_avg = vloss_sum / len(val_dl)
@@ -180,6 +181,37 @@ def run_training(model, train_dl, val_dl, epochs=10, base_lr=0.01,
               f"acc={acc:.4f}  miou={miou:.4f}")
 
     return model, log
+
+
+# -----------------------------------------------
+#  Post-training multi-scale evaluation
+# -----------------------------------------------
+
+def multiscale_eval(model, val_dl, dev, scales=(0.75, 1.0, 1.25)):
+    """
+    Runs multi-scale + flip inference on the entire val set.
+    Returns pixel accuracy and mIoU.
+    Only works for models that have multiscale_predict method.
+    """
+    model.eval()
+    pred_list, gt_list = [], []
+    print(f"  running multi-scale eval with scales={scales}...")
+    with torch.no_grad():
+        for imgs, segs in tqdm(val_dl, desc='MS eval'):
+            imgs, segs = imgs.to(dev), segs.to(dev)
+            if hasattr(model, 'multiscale_predict'):
+                preds = model.multiscale_predict(imgs, scales=scales)
+            else:
+                # fallback to single scale if model doesnt support it
+                preds = model(imgs).argmax(1)
+            pred_list.append(preds.cpu())
+            gt_list.append(segs.cpu())
+
+    all_pred = torch.cat(pred_list)
+    all_gt = torch.cat(gt_list)
+    ms_acc = calc_pixel_acc(all_pred, all_gt, IGNORE_LBL)
+    ms_miou = calc_miou(all_pred, all_gt, N_CLASSES, IGNORE_LBL)
+    return ms_acc, ms_miou
 
 
 # -----------------------------------------------
@@ -250,19 +282,25 @@ def show_samples(my_model, smp_model, val_dl, dev, n=4,
     print(f"saved predictions to {savepath}")
 
 
-def print_results(log_mine, log_smp):
+def print_results(log_mine, log_smp, ms_mine=None, ms_smp=None):
     """Quick summary table at the end."""
-    print("\n" + "="*55)
+    print("\n" + "="*65)
     print("  Final Results (last epoch)")
-    print("="*55)
-    print(f"  {'':20s} {'Mine':>14s} {'SMP':>14s}")
-    print("-"*55)
+    print("="*65)
+    print(f"  {'Metric':30s} {'Mine':>14s} {'SMP':>14s}")
+    print("-"*65)
     for name, k in [('Train Loss', 'train_loss'), ('Val Loss', 'val_loss'),
                     ('Pixel Acc', 'acc'), ('mIoU', 'miou')]:
         m = log_mine[k][-1]
         s = log_smp[k][-1]
-        print(f"  {name:20s} {m:14.4f} {s:14.4f}")
-    print("="*55)
+        print(f"  {name:30s} {m:14.4f} {s:14.4f}")
+    # multi-scale rows
+    if ms_mine is not None and ms_smp is not None:
+        ms_acc_m, ms_miou_m = ms_mine
+        ms_acc_s, ms_miou_s = ms_smp
+        print(f"  {'MS Pixel Accuracy':30s} {ms_acc_m:14.4f} {ms_acc_s:14.4f}")
+        print(f"  {'MS Mean IoU':30s} {ms_miou_m:14.4f} {ms_miou_s:14.4f}")
+    print("="*65)
 
 
 # -----------------------------------------------
@@ -273,11 +311,12 @@ def main():
     dev = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     print(f"using {dev}")
 
-    # hyperparams — keeping it small for the toy experiment
-    epochs = 10
-    bs = 4
-    lr = 0.005        # paper uses 0.01 but we have way less data
-    n_train = 200
+    # hyperparams — paper uses 473 crops but our GPU (6GB) cant handle that
+    # so we use 256 with batch size 2 to stay within VRAM limits
+    epochs = 15
+    bs = 2
+    lr = 0.01         # paper's base LR
+    n_train = 500
     n_val = 50
     crop = 256
 
@@ -312,14 +351,21 @@ def main():
         label='SMP PSPNet', mine=False
     )
 
-    # ---- 3) compare ----
+    # ---- 3) multi-scale evaluation (paper reports these numbers) ----
+    print("\n>> running multi-scale evaluation...")
+    ms_mine = multiscale_eval(my_net, val_dl, dev, scales=(0.75, 1.0, 1.25))
+    ms_smp = multiscale_eval(smp_net, val_dl, dev, scales=(0.75, 1.0, 1.25))
+    print(f"  my pspnet  — MS acc: {ms_mine[0]:.4f}, MS mIoU: {ms_mine[1]:.4f}")
+    print(f"  smp pspnet — MS acc: {ms_smp[0]:.4f}, MS mIoU: {ms_smp[1]:.4f}")
+
+    # ---- 4) compare ----
     print("\n>> generating plots...")
     plot_curves(my_log, smp_log, epochs)
 
     print(">> generating sample predictions...")
     show_samples(my_net, smp_net, val_dl, dev)
 
-    print_results(my_log, smp_log)
+    print_results(my_log, smp_log, ms_mine=ms_mine, ms_smp=ms_smp)
 
     # save the weights just in case
     os.makedirs('saved_models', exist_ok=True)

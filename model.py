@@ -1,11 +1,18 @@
 # model.py
 # --------
 # My PSPNet implementation based on the CVPR 2017 paper by Zhao et al.
-# I basically read through the paper and tried to code up each part myself.
+# I read through the paper and coded up each part myself.
 # The whole idea is that normal segmentation networks dont really "see" the
 # bigger picture — like they might label a boat on a road because they only
 # look at local patches. PSPNet adds this pyramid pooling thing that forces
 # the network to also look at the whole image at once, which helps a lot.
+#
+# Key things from the paper that I implemented:
+#   - Deep stem (three 3x3 convs instead of one 7x7) — Section 3.1
+#   - Dilated ResNet50 backbone (output stride 8)
+#   - Pyramid Pooling Module with bin sizes 1,2,3,6 — Section 3.2
+#   - Auxiliary loss from layer3 features — Section 3.3
+#   - Multi-scale inference with flipping — Section 4.1
 
 import torch
 import torch.nn as nn
@@ -94,17 +101,42 @@ class Classifier(nn.Module):
         return self.pipe(x)
 
 
+class DeepStem(nn.Module):
+    """
+    The paper mentions using a modified ResNet with three 3x3 convs
+    in the stem instead of the standard single 7x7 conv.
+    This is what they call the "deep stem" or "resnet-v1c" variant.
+    Channels go: 3 -> 64 -> 64 -> 128, with BN+ReLU after each.
+    Then a 3x3 maxpool to get stride 4 total (same as normal ResNet).
+    """
+    def __init__(self):
+        super().__init__()
+        self.conv1 = nn.Conv2d(3, 64, 3, stride=2, padding=1, bias=False)
+        self.bn1 = nn.BatchNorm2d(64)
+        self.conv2 = nn.Conv2d(64, 64, 3, stride=1, padding=1, bias=False)
+        self.bn2 = nn.BatchNorm2d(64)
+        self.conv3 = nn.Conv2d(64, 128, 3, stride=1, padding=1, bias=False)
+        self.bn3 = nn.BatchNorm2d(128)
+        self.relu = nn.ReLU(inplace=True)
+        self.pool = nn.MaxPool2d(3, stride=2, padding=1)
+
+    def forward(self, x):
+        x = self.relu(self.bn1(self.conv1(x)))
+        x = self.relu(self.bn2(self.conv2(x)))
+        x = self.relu(self.bn3(self.conv3(x)))
+        x = self.pool(x)
+        return x
+
+
 def _load_dilated_resnet():
     """
     Grab a pretrained ResNet50 but modify it so the last two stages
     use dilated convolutions instead of strided ones.
 
-    Why? Because the paper says the feature extractor should have an
-    output stride of 8 (meaning the feature map is 1/8 of input size).
-    Normal ResNet50 has stride 32 which throws away too much spatial info.
-    The trick is to replace the stride-2 downsampling in layer3 and layer4
-    with dilation instead — this keeps the resolution but widens the
-    receptive field. Torchvision makes this easy with replace_stride_with_dilation.
+    The paper says the feature extractor should give output stride = 8.
+    Normal ResNet50 has stride 32 which loses too much spatial info.
+    The trick is to replace stride-2 downsampling in layer3 and layer4
+    with dilation — keeps resolution but widens receptive field.
     """
     backbone = models.resnet50(
         weights=models.ResNet50_Weights.IMAGENET1K_V1,
@@ -113,13 +145,36 @@ def _load_dilated_resnet():
     return backbone
 
 
+def _init_stem_from_pretrained(deep_stem, resnet_conv1_weight):
+    """
+    Try to initialize the deep stem's first conv from the pretrained 7x7.
+    We take the center 3x3 patch of the 7x7 kernel as a rough initialization
+    for conv1. The other two convs get kaiming init.
+    Not perfect but better than fully random — the paper probably trained
+    the deep stem from scratch on ImageNet but we dont have time for that.
+    """
+    # the pretrained conv1 is [64, 3, 7, 7] — crop center 3x3
+    w = resnet_conv1_weight
+    center = w[:, :, 2:5, 2:5].clone()  # [64, 3, 3, 3]
+    deep_stem.conv1.weight.data.copy_(center)
+
+    # kaiming for the other two convs
+    nn.init.kaiming_normal_(deep_stem.conv2.weight, mode='fan_out', nonlinearity='relu')
+    nn.init.kaiming_normal_(deep_stem.conv3.weight, mode='fan_out', nonlinearity='relu')
+
+    # batchnorm init
+    for bn in [deep_stem.bn1, deep_stem.bn2, deep_stem.bn3]:
+        nn.init.ones_(bn.weight)
+        nn.init.zeros_(bn.bias)
+
+
 class MyPSPNet(nn.Module):
     """
-    Full PSPNet model.
+    Full PSPNet model — now with the deep stem from the paper.
 
-    The pipeline goes:
+    Pipeline:
         input image
-            -> resnet stem (conv + pool, stride 4)
+            -> deep stem: 3x3 conv(64) -> 3x3 conv(64) -> 3x3 conv(128) -> pool
             -> layer1 (256ch)
             -> layer2 (512ch)
             -> layer3 (1024ch, dilated)  <-- aux head taps here
@@ -127,24 +182,48 @@ class MyPSPNet(nn.Module):
             -> PPM (2048 -> 4096ch)
             -> main classifier -> upsample to original size
 
-    During training, the aux head also produces predictions from layer3
-    output. The paper says this helps with gradient flow (deep supervision).
+    Note: layer1 expects 128 input channels now (from deep stem's conv3)
+    instead of 64 from the normal stem. So we need to adjust that.
     """
     def __init__(self, num_classes=21, use_aux=False):
         super().__init__()
         self.use_aux = use_aux
 
-        # load the backbone
+        # load pretrained resnet for the residual stages + weight init
         resnet = _load_dilated_resnet()
 
-        # break it into stages so i can grab intermediate features
-        self.stem = nn.Sequential(
-            resnet.conv1, resnet.bn1, resnet.relu, resnet.maxpool
-        )
-        self.stage1 = resnet.layer1   # -> 256 ch
+        # use our deep stem instead of the standard 7x7 conv
+        self.stem = DeepStem()
+        _init_stem_from_pretrained(self.stem, resnet.conv1.weight.data)
+
+        # layer1 normally expects 64ch input (from standard stem)
+        # our deep stem outputs 128ch, so we need to fix the first conv in layer1
+        # layer1's first block has a downsample[0] conv that goes 64->256
+        # and the block's conv1 that goes 64->64. We need to change those to accept 128.
+        old_l1 = resnet.layer1
+        first_block = old_l1[0]
+
+        # fix the main path: conv1 input channels 64 -> 128
+        old_conv1 = first_block.conv1
+        new_conv1 = nn.Conv2d(128, old_conv1.out_channels,
+                              kernel_size=old_conv1.kernel_size,
+                              stride=old_conv1.stride,
+                              padding=old_conv1.padding, bias=False)
+        nn.init.kaiming_normal_(new_conv1.weight, mode='fan_out', nonlinearity='relu')
+        first_block.conv1 = new_conv1
+
+        # fix the skip connection: downsample conv 64 -> 256 becomes 128 -> 256
+        old_ds = first_block.downsample[0]
+        new_ds = nn.Conv2d(128, old_ds.out_channels,
+                           kernel_size=old_ds.kernel_size,
+                           stride=old_ds.stride, bias=False)
+        nn.init.kaiming_normal_(new_ds.weight, mode='fan_out', nonlinearity='relu')
+        first_block.downsample[0] = new_ds
+
+        self.stage1 = old_l1           # -> 256 ch
         self.stage2 = resnet.layer2   # -> 512 ch
-        self.stage3 = resnet.layer3   # -> 1024 ch (dilated, no downsampling)
-        self.stage4 = resnet.layer4   # -> 2048 ch (dilated, no downsampling)
+        self.stage3 = resnet.layer3   # -> 1024 ch (dilated)
+        self.stage4 = resnet.layer4   # -> 2048 ch (dilated)
 
         # pyramid pooling on top of stage4 features
         self.ppm = PPM(in_c=2048, reduced_c=512, bins=(1, 2, 3, 6))
@@ -203,12 +282,63 @@ class MyPSPNet(nn.Module):
 
         return out
 
+    def multiscale_predict(self, x, scales=(0.5, 0.75, 1.0, 1.25, 1.5, 1.75)):
+        """
+        Multi-scale inference as described in the paper (Section 4.1).
+        They say they average predictions across multiple scales AND
+        their horizontal flips. This boosts mIoU by a decent amount.
+
+        For each scale:
+          1. Resize input to that scale
+          2. Get prediction
+          3. Also get prediction on horizontally flipped input
+          4. Average all of them
+
+        Kinda slow but gives better results — the paper always reports
+        numbers with multi-scale testing.
+        """
+        self.eval()
+        H, W = x.shape[2], x.shape[3]
+        n_classes = self.cls_head.pipe[-1].out_channels  # grab from the 1x1 conv
+
+        total_probs = torch.zeros(x.shape[0], n_classes, H, W, device=x.device)
+
+        for s in scales:
+            sH, sW = int(H * s), int(W * s)
+            # make sure dimensions are valid
+            if sH < 32 or sW < 32:
+                continue
+
+            scaled = F.interpolate(x, size=(sH, sW), mode='bilinear',
+                                   align_corners=True)
+
+            with torch.no_grad():
+                # normal prediction
+                logits = self.forward(scaled)
+                probs = F.softmax(logits, dim=1)
+                probs = F.interpolate(probs, size=(H, W), mode='bilinear',
+                                      align_corners=True)
+                total_probs += probs
+
+                # flipped prediction — flip, predict, flip back
+                flipped = torch.flip(scaled, dims=[3])
+                logits_f = self.forward(flipped)
+                probs_f = F.softmax(logits_f, dim=1)
+                probs_f = torch.flip(probs_f, dims=[3])  # flip back
+                probs_f = F.interpolate(probs_f, size=(H, W), mode='bilinear',
+                                        align_corners=True)
+                total_probs += probs_f
+
+        # average over all (scales * 2) predictions
+        total_probs /= (2 * len(scales))
+        return total_probs.argmax(dim=1)
+
 
 # just a quick sanity check to make sure everything connects properly
 if __name__ == '__main__':
     model = MyPSPNet(num_classes=21, use_aux=True)
 
-    x = torch.randn(2, 3, 256, 256)
+    x = torch.randn(2, 3, 473, 473)
 
     model.train()
     main_out, aux_out = model(x)
@@ -218,4 +348,8 @@ if __name__ == '__main__':
     with torch.no_grad():
         pred = model(x)
     print(f"eval mode: pred={pred.shape}")
+
+    # test multi-scale inference
+    ms_pred = model.multiscale_predict(x, scales=(0.75, 1.0, 1.25))
+    print(f"multiscale pred: {ms_pred.shape}")
     print("looks good!")

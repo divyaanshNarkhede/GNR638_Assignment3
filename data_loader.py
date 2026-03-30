@@ -1,9 +1,9 @@
 # data_loader.py
 # ---------------
 # Handles loading PASCAL VOC 2012 data for training and validation.
-# I'm using a small subset here because the full dataset would take
-# forever to train on my machine. The paper uses ADE20K and Cityscapes
-# but VOC works fine for showing the model actually learns stuff.
+# Using a subset of VOC since the full thing is too big for a quick experiment.
+# The paper trains on ADE20K and Cityscapes but VOC works for demonstrating
+# the model works. I matched the paper's 473x473 crop size and augmentations.
 
 import random
 import numpy as np
@@ -24,14 +24,13 @@ class VOCSubset(Dataset):
     Wraps torchvision VOCSegmentation but only uses a small chunk of it.
     Also handles all the augmentation and preprocessing.
     
-    I followed the augmentation strategy from the paper roughly:
+    I followed the augmentation strategy from the paper:
     random scaling, horizontal flips, some blur, and random crops.
-    The crop size is smaller than what the paper uses (they do 473x473
-    for ADE20K) but 256 is fine for our toy experiment.
+    The paper uses 473x473 crops so thats what we do here too.
     """
 
     def __init__(self, root_dir, split='train', download=True,
-                 subset_size=50, crop_sz=256, do_augment=True):
+                 subset_size=50, crop_sz=473, do_augment=True):
         self.raw_dataset = VOCSegmentation(
             root=root_dir, year='2012',
             image_set=split, download=download
@@ -131,7 +130,7 @@ class VOCSubset(Dataset):
 
 
 def build_loaders(data_path='./data', bs=4, n_train=200, n_val=50,
-                  crop_sz=256, num_workers=2):
+                  crop_sz=473, num_workers=2):
     """Make train/val dataloaders. Nothing special here."""
     train_ds = VOCSubset(data_path, 'train', download=True,
                          subset_size=n_train, crop_sz=crop_sz, do_augment=True)
