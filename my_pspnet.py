@@ -139,7 +139,7 @@ def _dilated_resnet50():
 # Full PSPNet
 # ====================================================================
 
-class PSPNetScratch(nn.Module):
+class PSPNetMy(nn.Module):
     """
     From-scratch PSPNet implementation.
 
@@ -252,7 +252,7 @@ class PSPNetScratch(nn.Module):
 # Smoke test
 # ====================================================================
 if __name__ == "__main__":
-    net = PSPNetScratch(num_classes=21, use_aux=True)
+    net = PSPNetMy(num_classes=21, use_aux=True)
 
     net.train()
     sample = torch.randn(2, 3, 473, 473)

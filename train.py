@@ -1,19 +1,21 @@
 """
-Training and evaluation script — scratch PSPNet vs official (hszhao) PSPNet.
+This script runs the full training and evaluation pipeline — my PSPNet
+against the official hszhao implementation, both trained on a small slice
+of PASCAL VOC 2012 so the comparison is fair and fast.
 
-What this script does:
-  1.  Trains our from-scratch PSPNet on a toy PASCAL VOC 2012 subset
-  2.  Trains the hszhao reference PSPNet on the same data
-  3.  Records loss, pixel accuracy, and mean IoU for each epoch
-  4.  Generates a 2x2 comparison plot and a qualitative side-by-side figure
-  5.  Prints a summary table of final-epoch and multi-scale metrics
+Here's what happens when you run it:
+  1. My PSPNet gets trained on the VOC subset
+  2. The hszhao reference model gets trained on the exact same data
+  3. We track loss, pixel accuracy, and mIoU every epoch for both
+  4. At the end, we generate a 2x2 plot and a side-by-side qualitative figure
+  5. A summary table prints the final numbers for easy comparison
 
-Training protocol follows the PSPNet paper:
-  - SGD, momentum=0.9, weight_decay=1e-4
-  - Poly LR schedule: lr_t = base_lr * (1 - t/T)^0.9
-  - Backbone LR = base_lr; new head LR = 10 * base_lr
-  - Auxiliary loss weight = 0.4
-  - Cross-entropy with ignore_index=255
+I followed the training setup from the PSPNet paper as closely as possible:
+  - SGD with momentum=0.9 and weight_decay=1e-4
+  - Poly LR decay: lr_t = base_lr * (1 - t/T)^0.9
+  - Backbone uses base_lr, the new heads get 10x that
+  - Auxiliary loss is weighted at 0.4
+  - Cross-entropy loss with ignore_index=255 for void/boundary pixels
 """
 
 import os
@@ -36,13 +38,13 @@ from tqdm import tqdm
 
 class _Tee:
     """
-    Wraps a stream (stdout or stderr) so every write goes to both the
-    original terminal stream and an open log file simultaneously.
+    A small helper that splits every write to both the real terminal
+    and a log file at the same time — so nothing gets lost.
 
-    Progress bars (tqdm) use carriage-return (\\r) to overwrite the same
-    terminal line.  Writing those raw to a file produces hundreds of
-    duplicate lines.  We strip \\r-based rewrites and only persist the
-    final completed line (the one that ends with \\n) to the log file.
+    The tricky part is tqdm: it uses carriage returns (\\r) to redraw
+    progress bars in place. If we write those straight to a file we'd
+    end up with hundreds of half-finished lines. So we buffer each line
+    and only write it to the log once it's complete (i.e. ends with \\n).
     """
     def __init__(self, stream, log_file):
         self._stream   = stream
@@ -50,15 +52,15 @@ class _Tee:
         self._buf      = ""          # accumulates chars until a newline
 
     def write(self, data):
-        # Always pass through to the real terminal unchanged
+        # First, let the real terminal see everything as-is
         self._stream.write(data)
 
-        # For the log file: process character by character so we can
-        # honour \\r (carriage-return) — discard everything buffered so
-        # far on a \\r, keep only what follows the last \\r on each line.
+        # For the log file we go char by char so we can handle \\r properly.
+        # A carriage return means tqdm is redrawing the line, so we just
+        # throw away whatever we had buffered and start fresh.
         for ch in data:
             if ch == "\r":
-                self._buf = ""       # overwrite: discard current line buffer
+                self._buf = ""       # tqdm redraw — discard the partial line
             elif ch == "\n":
                 self._log_file.write(self._buf + "\n")
                 self._log_file.flush()
@@ -70,13 +72,13 @@ class _Tee:
         self._stream.flush()
         self._log_file.flush()
 
-    # Forward any attribute access the underlying stream may need
+    # Anything else (like .encoding or .fileno) just falls through to the real stream
     def __getattr__(self, attr):
         return getattr(self._stream, attr)
 
 
 # ------------------------------------------------------------------
-# Clone / import hszhao's official PSPNet (cloned into the project folder)
+# Pull in the official hszhao PSPNet — clone the repo if it's not there yet
 # ------------------------------------------------------------------
 _semseg_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "semseg")
 if not os.path.exists(_semseg_dir):
@@ -89,19 +91,19 @@ sys.path.append(_semseg_dir)
 from model.pspnet import PSPNet as HSZhaoPSPNet
 
 from dataset_loader import get_dataloaders, IGNORE_LABEL, VOC_NUM_CLASSES
-from my_pspnet import PSPNetScratch
+from my_pspnet import PSPNetMy
 
 
 # ====================================================================
-# Evaluation metrics
+# Metric helpers — mIoU and pixel accuracy
 # ====================================================================
 
 def mean_iou(pred_flat, gt_flat, num_classes, ignore_idx=255):
     """
-    Per-class IoU averaged over classes present in the batch.
-
-    The PSPNet paper reports mIoU as the primary benchmark metric.
-    Boundary pixels (label==ignore_idx) are excluded before scoring.
+    Computes mean IoU — we average per-class IoU over every class
+    that actually shows up in this batch (skipping empty classes).
+    Boundary/void pixels (label == ignore_idx) are stripped out first
+    since the paper doesn't count them.
     """
     keep = gt_flat != ignore_idx
     pred_flat = pred_flat[keep]
@@ -121,8 +123,8 @@ def mean_iou(pred_flat, gt_flat, num_classes, ignore_idx=255):
 
 def pixel_accuracy(preds, targets, ignore_idx=255):
     """
-    Overall pixel accuracy — fraction of correctly labelled pixels,
-    ignoring void/boundary pixels.
+    Simple pixel accuracy: out of all the non-void pixels, how many
+    did we get right? Void pixels (label == ignore_idx) are excluded.
     """
     valid     = targets != ignore_idx
     correct   = (preds[valid] == targets[valid]).sum().item()
@@ -131,14 +133,14 @@ def pixel_accuracy(preds, targets, ignore_idx=255):
 
 
 # ====================================================================
-# Learning-rate schedule
+# Learning rate schedule
 # ====================================================================
 
 def poly_lr_scheduler(optimizer, total_steps, power=0.9):
     """
-    Polynomial decay schedule used in the PSPNet paper.
-        lr_t = base_lr * (1 - t / T) ^ power,  power = 0.9
-    Implemented via LambdaLR for simplicity.
+    Poly LR decay, straight from the PSPNet paper.
+    The learning rate follows: lr_t = base_lr * (1 - t / T) ^ 0.9
+    It starts at base_lr and smoothly drops to near-zero by the end.
     """
     def _decay(step):
         return (1.0 - step / total_steps) ** power
@@ -147,26 +149,28 @@ def poly_lr_scheduler(optimizer, total_steps, power=0.9):
 
 
 # ====================================================================
-# Core training loop
+# Training loop
 # ====================================================================
 
 def train_one_model(model, train_loader, val_loader,
                     epochs=10, base_lr=0.01,
                     device="cpu", tag="model", scratch=False):
     """
-    Train a segmentation model for `epochs` epochs and collect metrics.
+    Trains a model for the given number of epochs and returns it along
+    with a dict of per-epoch metrics (train loss, val loss, accuracy, mIoU).
 
-    For the scratch model:
-      - pretrained backbone params  →  lr = base_lr
-      - newly added head/stem params →  lr = base_lr * 10
+    For my model I use differential learning rates — the pretrained backbone
+    gets base_lr while the new heads train 10x faster. The official model
+    just uses a single learning rate for everything.
 
-    Both models use SGD with poly decay.  The scratch model also applies
-    an auxiliary loss (weight 0.4) from the stage-3 branch.
+    My model also has an auxiliary loss branch on stage-3 (weight 0.4)
+    which helps with gradient flow during early training.
     """
     model = model.to(device)
     loss_fn = nn.CrossEntropyLoss(ignore_index=IGNORE_LABEL)
 
-    # Build per-group optimizer
+    # For my model we split params into backbone vs heads so we can
+    # give the heads a higher learning rate (they're training from random init)
     if scratch:
         _head_keys = ["pyramid_pool", "seg_head", "aux_head", "stem", "stem_adapter",
                       "ppm", "head"]
@@ -195,9 +199,7 @@ def train_one_model(model, train_loader, val_loader,
     print(f"{'='*60}")
 
     for ep in range(epochs):
-        # ----------------------------------------------------------
-        # Training phase
-        # ----------------------------------------------------------
+        # --- train for one epoch ---
         model.train()
         running_loss = 0.0
 
@@ -209,7 +211,7 @@ def train_one_model(model, train_loader, val_loader,
             optimizer.zero_grad()
 
             if hasattr(model, "zoom_factor") and model.training:
-                # hszhao PSPNet requires (H-1) % 8 == 0
+                # hszhao's model is picky about input size — it needs (H-1) % 8 == 0
                 B, C, H, W = imgs.shape
                 sh = ((H - 1) // 8) * 8 + 1
                 sw = ((W - 1) // 8) * 8 + 1
@@ -238,9 +240,7 @@ def train_one_model(model, train_loader, val_loader,
 
         epoch_train_loss = running_loss / len(train_loader)
 
-        # ----------------------------------------------------------
-        # Validation phase
-        # ----------------------------------------------------------
+        # --- validate on the held-out set ---
         model.eval()
         val_loss_accum = 0.0
         pred_list, gt_list = [], []
@@ -298,14 +298,15 @@ def train_one_model(model, train_loader, val_loader,
 
 
 # ====================================================================
-# Plotting utilities
+# Plots
 # ====================================================================
 
-def plot_training_curves(log_scratch, log_official, num_epochs,
+def plot_training_curves(log_my, log_official, num_epochs,
                          out_path="comparison_plots.png"):
     """
-    Four-panel figure: train loss / val loss / pixel accuracy / mIoU,
-    comparing scratch implementation with the official hszhao model.
+    Draws a 2x2 grid of learning curves (train loss, val loss, pixel
+    accuracy, mIoU) with both models on the same axes so you can
+    see at a glance how they compare over training.
     """
     epoch_axis = range(1, num_epochs + 1)
     fig, axes  = plt.subplots(2, 2, figsize=(14, 10))
@@ -318,7 +319,7 @@ def plot_training_curves(log_scratch, log_official, num_epochs,
     ]
 
     for ax, (title, key, ylabel) in zip(axes.flat, panel_cfg):
-        ax.plot(epoch_axis, log_scratch[key],  "o-",  label="Scratch PSPNet",          linewidth=2)
+        ax.plot(epoch_axis, log_my[key],  "o-",  label="My PSPNet",          linewidth=2)
         ax.plot(epoch_axis, log_official[key], "s--", label="Official (hszhao) PSPNet", linewidth=2)
         ax.set_title(title, fontsize=13)
         ax.set_xlabel("Epoch")
@@ -327,7 +328,7 @@ def plot_training_curves(log_scratch, log_official, num_epochs,
         ax.grid(True, alpha=0.3)
 
     fig.suptitle(
-        "PSPNet: Scratch vs Official Implementation Comparison",
+        "PSPNet: My vs Official Implementation Comparison",
         fontsize=15, fontweight="bold", y=1.01,
     )
     plt.tight_layout()
@@ -336,13 +337,14 @@ def plot_training_curves(log_scratch, log_official, num_epochs,
     plt.close()
 
 
-def show_qualitative_results(m_scratch, m_official, val_loader, device,
+def show_qualitative_results(m_my, m_official, val_loader, device,
                              n_samples=4, out_path="qualitative_results.png"):
     """
-    Side-by-side visualisation:
-        [Input Image | Ground Truth | Scratch Pred | Official Pred]
+    Grabs a batch from the val set and shows predictions side-by-side:
+        Input Image  |  Ground Truth  |  My PSPNet  |  Official (hszhao)
+    Good for a quick sanity check on what the models are actually seeing.
     """
-    m_scratch.eval()
+    m_my.eval()
     m_official.eval()
 
     imgs, masks = next(iter(val_loader))
@@ -350,7 +352,7 @@ def show_qualitative_results(m_scratch, m_official, val_loader, device,
     n_samples   = min(n_samples, imgs.size(0))
 
     with torch.no_grad():
-        scratch_preds = torch.argmax(m_scratch(imgs_dev), dim=1).cpu()
+        my_preds = torch.argmax(m_my(imgs_dev), dim=1).cpu()
 
         B, C, H, W = imgs_dev.shape
         sh = ((H - 1) // 8) * 8 + 1
@@ -365,12 +367,12 @@ def show_qualitative_results(m_scratch, m_official, val_loader, device,
             official_logits = m_official(imgs_dev)
         official_preds = torch.argmax(official_logits, dim=1).cpu()
 
-    # Reverse ImageNet normalisation for display
+    # Undo the ImageNet normalisation so the image looks right when displayed
     _mean = torch.tensor([0.485, 0.456, 0.406]).view(3, 1, 1)
     _std  = torch.tensor([0.229, 0.224, 0.225]).view(3, 1, 1)
 
     fig, axes = plt.subplots(n_samples, 4, figsize=(16, 4 * n_samples))
-    col_labels = ["Input Image", "Ground Truth", "Scratch PSPNet", "Official (hszhao)"]
+    col_labels = ["Input Image", "Ground Truth", "My PSPNet", "Official (hszhao)"]
 
     for row in range(n_samples):
         rgb = (imgs[row] * _std + _mean).permute(1, 2, 0).clamp(0, 1).numpy()
@@ -378,7 +380,7 @@ def show_qualitative_results(m_scratch, m_official, val_loader, device,
         row_data = [
             rgb,
             masks[row].numpy(),
-            scratch_preds[row].numpy(),
+            my_preds[row].numpy(),
             official_preds[row].numpy(),
         ]
         cmaps = [None, "tab20", "tab20", "tab20"]
@@ -394,7 +396,7 @@ def show_qualitative_results(m_scratch, m_official, val_loader, device,
                 axes[row, col].set_title(col_labels[col], fontsize=12)
 
     fig.suptitle(
-        "Qualitative Comparison: Scratch vs Official PSPNet",
+        "Qualitative Comparison: My PSPNet vs Official PSPNet",
         fontsize=14, fontweight="bold",
     )
     plt.tight_layout()
@@ -409,8 +411,10 @@ def show_qualitative_results(m_scratch, m_official, val_loader, device,
 
 def _ms_infer(model, img_batch, num_cls, device, scales=(0.75, 1.0, 1.25), flip=True):
     """
-    Average predictions across scales (and optionally horizontal flip)
-    as described in the PSPNet paper (scales 0.5–1.75 in production).
+    Runs the model at multiple resolutions and averages the logits.
+    Optionally also flips each scaled image horizontally and averages
+    those in too — this is the standard eval trick from the PSPNet paper
+    (they use scales 0.5 to 1.75 in the full setup).
     """
     model.eval()
     B, C, H, W    = img_batch.shape
@@ -442,7 +446,7 @@ def _ms_infer(model, img_batch, num_cls, device, scales=(0.75, 1.0, 1.25), flip=
 
 
 def eval_multiscale(model, val_loader, device, num_cls):
-    """Run multi-scale inference over the full validation set."""
+    """Runs multi-scale inference over the whole val set and returns accuracy + mIoU."""
     model.eval()
     all_preds, all_gts = [], []
 
@@ -463,16 +467,16 @@ def eval_multiscale(model, val_loader, device, num_cls):
 
 
 # ====================================================================
-# Summary table
+# Results summary
 # ====================================================================
 
-def print_results_table(log_scratch, log_official,
-                        ms_scratch=None, ms_official=None):
-    """Tabulate final-epoch metrics for both models side by side."""
+def print_results_table(log_my, log_official,
+                        ms_my=None, ms_official=None):
+    """Prints a clean side-by-side table of the final-epoch numbers for both models."""
     print("\n" + "=" * 65)
     print("  FINAL METRICS COMPARISON (last epoch)")
     print("=" * 65)
-    print(f"  {'Metric':<22} {'Scratch PSPNet':>18} {'Official (hszhao)':>18}")
+    print(f"  {'Metric':<22} {'My PSPNet':>18} {'Official (hszhao)':>18}")
     print("-" * 65)
 
     rows = [
@@ -482,24 +486,24 @@ def print_results_table(log_scratch, log_official,
         ("Mean IoU",       "val_miou"),
     ]
     for label, key in rows:
-        s_val = log_scratch[key][-1]
+        s_val = log_my[key][-1]
         o_val = log_official[key][-1]
         print(f"  {label:<22} {s_val:>18.4f} {o_val:>18.4f}")
 
-    if ms_scratch and ms_official:
+    if ms_my and ms_official:
         print("-" * 65)
-        print(f"  {'MS Pixel Accuracy':<22} {ms_scratch[0]:>18.4f} {ms_official[0]:>18.4f}")
-        print(f"  {'MS Mean IoU':<22} {ms_scratch[1]:>18.4f} {ms_official[1]:>18.4f}")
+        print(f"  {'MS Pixel Accuracy':<22} {ms_my[0]:>18.4f} {ms_official[0]:>18.4f}")
+        print(f"  {'MS Mean IoU':<22} {ms_my[1]:>18.4f} {ms_official[1]:>18.4f}")
 
     print("=" * 65)
 
 
 # ====================================================================
-# Entry point
+# Main
 # ====================================================================
 
 def main():
-    # Open output.txt next to this script and mirror all output to it
+    # Tee all output to output.txt so we have a log after the run
     _log_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "output.txt")
     _log_fh   = open(_log_path, "w", encoding="utf-8")
     sys.stdout = _Tee(sys.__stdout__, _log_fh)
@@ -509,18 +513,18 @@ def main():
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Using device: {device}")
 
-    # Hyper-parameters (tuned for a 6 GB GPU)
+    # These are tuned to fit comfortably on a 6 GB GPU
     cfg = dict(
         epochs     = 15,
-        batch_size = 2,        # 6 GB VRAM budget
+        batch_size = 2,        # keep it small to stay within VRAM
         base_lr    = 0.01,
         num_train  = 500,
         num_val    = 100,
-        crop_size  = 257,      # satisfies (x-1) % 8 == 0; fits in VRAM
+        crop_size  = 257,      # 257 satisfies (x-1) % 8 == 0, needed by hszhao's model
         num_classes= VOC_NUM_CLASSES,
     )
 
-    # ---- data ----
+    # Load the dataset — downloads VOC 2012 automatically on the first run
     print("\nPreparing datasets (will download VOC 2012 on first run)...")
     _data_root = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data")
     train_loader, val_loader = get_dataloaders(
@@ -534,21 +538,21 @@ def main():
     print(f"Val  : {len(val_loader.dataset)} images ({len(val_loader)} batches)")
 
     # ----------------------------------------------------------------
-    # 1. Scratch PSPNet
+    # 1. Train my PSPNet
     # ----------------------------------------------------------------
-    print("\n>>> Initializing Scratch PSPNet with auxiliary branch...")
-    model_scratch = PSPNetScratch(num_classes=cfg["num_classes"], use_aux=True)
-    model_scratch, log_scratch = train_one_model(
-        model_scratch, train_loader, val_loader,
+    print("\n>>> Initializing My PSPNet with auxiliary branch...")
+    model_my = PSPNetMy(num_classes=cfg["num_classes"], use_aux=True)
+    model_my, log_my = train_one_model(
+        model_my, train_loader, val_loader,
         epochs  =cfg["epochs"],
         base_lr =cfg["base_lr"],
         device  =device,
-        tag     ="Scratch PSPNet",
+        tag     ="My PSPNet",
         scratch =True,
     )
 
     # ----------------------------------------------------------------
-    # 2. Official hszhao PSPNet
+    # 2. Train the official hszhao PSPNet on the same data
     # ----------------------------------------------------------------
     print("\n>>> Initializing Official (hszhao) PSPNet...")
     model_official = HSZhaoPSPNet(
@@ -567,29 +571,29 @@ def main():
     )
 
     # ----------------------------------------------------------------
-    # 3. Multi-scale evaluation
+    # 3. Re-evaluate both models with multi-scale inference
     # ----------------------------------------------------------------
     print("\n>>> Running multi-scale inference (scales: 0.5-1.75 + flip)...")
-    ms_scratch  = eval_multiscale(model_scratch,  val_loader, device, cfg["num_classes"])
-    print(f"  Scratch  MS — Pixel Acc: {ms_scratch[0]:.4f}, mIoU: {ms_scratch[1]:.4f}")
+    ms_my  = eval_multiscale(model_my,  val_loader, device, cfg["num_classes"])
+    print(f"  My PSPNet MS — Pixel Acc: {ms_my[0]:.4f}, mIoU: {ms_my[1]:.4f}")
 
     ms_official = eval_multiscale(model_official, val_loader, device, cfg["num_classes"])
     print(f"  Official MS — Pixel Acc: {ms_official[0]:.4f}, mIoU: {ms_official[1]:.4f}")
 
     # ----------------------------------------------------------------
-    # 4. Visualisations
+    # 4. Generate plots and qualitative results
     # ----------------------------------------------------------------
     print("\n>>> Generating comparison plots...")
-    plot_training_curves(log_scratch, log_official, cfg["epochs"])
+    plot_training_curves(log_my, log_official, cfg["epochs"])
 
     print("\n>>> Generating qualitative predictions...")
-    show_qualitative_results(model_scratch, model_official, val_loader, device)
+    show_qualitative_results(model_my, model_official, val_loader, device)
 
-    print_results_table(log_scratch, log_official, ms_scratch, ms_official)
+    print_results_table(log_my, log_official, ms_my, ms_official)
 
-    # Persist weights
+    # Save weights so we can reload them later without retraining
     os.makedirs("checkpoints", exist_ok=True)
-    torch.save(model_scratch.state_dict(),  "checkpoints/my_pspnet.pth")
+    torch.save(model_my.state_dict(),  "checkpoints/my_pspnet.pth")
     torch.save(model_official.state_dict(), "checkpoints/pspnet_official.pth")
     print("\nSaved model checkpoints to 'checkpoints/'")
 

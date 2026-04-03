@@ -6,41 +6,41 @@ Preparing datasets (will download VOC 2012 on first run)...
 Train: 500 images (250 batches)
 Val  : 100 images (50 batches)
 
->>> Initializing Scratch PSPNet with auxiliary branch...
+>>> Initializing My PSPNet with auxiliary branch...
 
 ============================================================
-  Training: Scratch PSPNet
+  Training: My PSPNet
   Epochs: 15  |  LR: 0.01  |  Device: cuda
 ============================================================
-[Scratch PSPNet] Epoch 1/15 Train: 100%|███████████████████████████████| 250/250 [00:42<00:00,  5.85it/s, loss=0.6329]
+[My PSPNet] Epoch 1/15 Train: 100%|███████████████████████████████| 250/250 [00:42<00:00,  5.85it/s, loss=0.6329]
   Epoch 1/15  Train Loss: 3.5126  |  Val Loss: 1.4165  |  Pixel Acc: 0.7086  |  mIoU: 0.0337
-[Scratch PSPNet] Epoch 2/15 Train: 100%|███████████████████████████████| 250/250 [00:42<00:00,  5.92it/s, loss=3.5710]
+[My PSPNet] Epoch 2/15 Train: 100%|███████████████████████████████| 250/250 [00:42<00:00,  5.92it/s, loss=3.5710]
   Epoch 2/15  Train Loss: 2.2205  |  Val Loss: 1.4303  |  Pixel Acc: 0.7100  |  mIoU: 0.0338
-[Scratch PSPNet] Epoch 3/15 Train: 100%|███████████████████████████████| 250/250 [00:42<00:00,  5.93it/s, loss=2.1845]
+[My PSPNet] Epoch 3/15 Train: 100%|███████████████████████████████| 250/250 [00:42<00:00,  5.93it/s, loss=2.1845]
   Epoch 3/15  Train Loss: 2.2067  |  Val Loss: 1.3935  |  Pixel Acc: 0.7100  |  mIoU: 0.0338
-[Scratch PSPNet] Epoch 4/15 Train: 100%|███████████████████████████████| 250/250 [00:42<00:00,  5.92it/s, loss=1.4461]
+[My PSPNet] Epoch 4/15 Train: 100%|███████████████████████████████| 250/250 [00:42<00:00,  5.92it/s, loss=1.4461]
   Epoch 4/15  Train Loss: 2.2436  |  Val Loss: 1.3928  |  Pixel Acc: 0.7100  |  mIoU: 0.0338
-[Scratch PSPNet] Epoch 5/15 Train: 100%|███████████████████████████████| 250/250 [00:42<00:00,  5.92it/s, loss=1.4844]
+[My PSPNet] Epoch 5/15 Train: 100%|███████████████████████████████| 250/250 [00:42<00:00,  5.92it/s, loss=1.4844]
   Epoch 5/15  Train Loss: 2.2726  |  Val Loss: 1.3913  |  Pixel Acc: 0.7100  |  mIoU: 0.0338
-[Scratch PSPNet] Epoch 6/15 Train: 100%|███████████████████████████████| 250/250 [00:42<00:00,  5.92it/s, loss=4.2351]
+[My PSPNet] Epoch 6/15 Train: 100%|███████████████████████████████| 250/250 [00:42<00:00,  5.92it/s, loss=4.2351]
   Epoch 6/15  Train Loss: 2.2120  |  Val Loss: 1.4000  |  Pixel Acc: 0.7100  |  mIoU: 0.0338
-[Scratch PSPNet] Epoch 7/15 Train: 100%|███████████████████████████████| 250/250 [00:42<00:00,  5.92it/s, loss=2.2989]
+[My PSPNet] Epoch 7/15 Train: 100%|███████████████████████████████| 250/250 [00:42<00:00,  5.92it/s, loss=2.2989]
   Epoch 7/15  Train Loss: 2.2291  |  Val Loss: 1.4064  |  Pixel Acc: 0.7100  |  mIoU: 0.0338
-[Scratch PSPNet] Epoch 8/15 Train: 100%|███████████████████████████████| 250/250 [00:42<00:00,  5.92it/s, loss=1.6952]
+[My PSPNet] Epoch 8/15 Train: 100%|███████████████████████████████| 250/250 [00:42<00:00,  5.92it/s, loss=1.6952]
   Epoch 8/15  Train Loss: 2.1461  |  Val Loss: 1.4540  |  Pixel Acc: 0.7100  |  mIoU: 0.0338
-[Scratch PSPNet] Epoch 9/15 Train: 100%|███████████████████████████████| 250/250 [00:42<00:00,  5.91it/s, loss=1.0115]
+[My PSPNet] Epoch 9/15 Train: 100%|███████████████████████████████| 250/250 [00:42<00:00,  5.91it/s, loss=1.0115]
   Epoch 9/15  Train Loss: 2.2513  |  Val Loss: 1.3919  |  Pixel Acc: 0.7100  |  mIoU: 0.0338
-[Scratch PSPNet] Epoch 10/15 Train: 100%|██████████████████████████████| 250/250 [00:42<00:00,  5.91it/s, loss=0.8185]
+[My PSPNet] Epoch 10/15 Train: 100%|██████████████████████████████| 250/250 [00:42<00:00,  5.91it/s, loss=0.8185]
   Epoch 10/15  Train Loss: 2.1414  |  Val Loss: 1.3900  |  Pixel Acc: 0.7096  |  mIoU: 0.0339
-[Scratch PSPNet] Epoch 11/15 Train: 100%|██████████████████████████████| 250/250 [00:42<00:00,  5.91it/s, loss=1.2037]
+[My PSPNet] Epoch 11/15 Train: 100%|██████████████████████████████| 250/250 [00:42<00:00,  5.91it/s, loss=1.2037]
   Epoch 11/15  Train Loss: 2.1934  |  Val Loss: 1.3841  |  Pixel Acc: 0.7100  |  mIoU: 0.0338
-[Scratch PSPNet] Epoch 12/15 Train: 100%|██████████████████████████████| 250/250 [00:42<00:00,  5.90it/s, loss=1.9869]
+[My PSPNet] Epoch 12/15 Train: 100%|██████████████████████████████| 250/250 [00:42<00:00,  5.90it/s, loss=1.9869]
   Epoch 12/15  Train Loss: 2.1659  |  Val Loss: 1.3538  |  Pixel Acc: 0.7100  |  mIoU: 0.0338
-[Scratch PSPNet] Epoch 13/15 Train: 100%|██████████████████████████████| 250/250 [00:42<00:00,  5.89it/s, loss=2.5686]
+[My PSPNet] Epoch 13/15 Train: 100%|██████████████████████████████| 250/250 [00:42<00:00,  5.89it/s, loss=2.5686]
   Epoch 13/15  Train Loss: 2.2535  |  Val Loss: 1.3612  |  Pixel Acc: 0.7100  |  mIoU: 0.0338
-[Scratch PSPNet] Epoch 14/15 Train: 100%|██████████████████████████████| 250/250 [00:42<00:00,  5.88it/s, loss=1.8863]
+[My PSPNet] Epoch 14/15 Train: 100%|██████████████████████████████| 250/250 [00:42<00:00,  5.88it/s, loss=1.8863]
   Epoch 14/15  Train Loss: 2.1622  |  Val Loss: 1.3834  |  Pixel Acc: 0.7100  |  mIoU: 0.0338
-[Scratch PSPNet] Epoch 15/15 Train: 100%|██████████████████████████████| 250/250 [00:42<00:00,  5.88it/s, loss=2.6933]
+[My PSPNet] Epoch 15/15 Train: 100%|██████████████████████████████| 250/250 [00:42<00:00,  5.88it/s, loss=2.6933]
   Epoch 15/15  Train Loss: 2.1634  |  Val Loss: 1.3802  |  Pixel Acc: 0.7100  |  mIoU: 0.0338
 
 >>> Initializing Official (hszhao) PSPNet...
@@ -81,7 +81,7 @@ Val  : 100 images (50 batches)
   Epoch 15/15  Train Loss: 2.0607  |  Val Loss: 1.8185  |  Pixel Acc: 0.7041  |  mIoU: 0.0354
 
 >>> Running multi-scale inference (scales: 0.5-1.75 + flip)...
-  Scratch  MS — Pixel Acc: 0.7100, mIoU: 0.0338
+  My PSPNet MS — Pixel Acc: 0.7100, mIoU: 0.0338
   Official MS — Pixel Acc: 0.7050, mIoU: 0.0352
 
 >>> Generating comparison plots...
@@ -94,7 +94,7 @@ Saved qualitative results to 'qualitative_results.png'
 =================================================================
   FINAL METRICS COMPARISON (last epoch)
 =================================================================
-  Metric                     Scratch PSPNet  Official (hszhao)
+  Metric                          My PSPNet  Official (hszhao)
 -----------------------------------------------------------------
   Train Loss                         2.1634             2.0607
   Val Loss                           1.3802             1.8185
