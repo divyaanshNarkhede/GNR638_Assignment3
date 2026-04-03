@@ -1,7 +1,7 @@
 # GNR 638 — Assignment 3: PSPNet from Scratch
 
 **Paper:** Zhao et al., *"Pyramid Scene Parsing Network"*, CVPR 2017  
-**Student:** Satwik Bhole
+**Student:** Divyaansh Narkhede
 
 ---
 
